@@ -1,0 +1,747 @@
+openapi: 3.0.3
+info:
+  title: AOSS Middle Layer API
+  description: >
+    Core API of the Application Outcome & Status Standard (AOSS) middle layer:
+    a normalization service between client applications and internal or
+    third-party decision/verification systems. This is a v0.1 draft published
+    for comment. Statuses, error categories, and outcome semantics are defined
+    normatively in SPEC.md.
+  version: 0.1.0
+  contact:
+    name: Melissa Rojas
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: https://api.example.com/aoss/v0
+    description: Placeholder server URL (adopter-defined)
+
+tags:
+  - name: Applications
+    description: Application lifecycle operations
+  - name: Events
+    description: Status change notifications
+
+paths:
+  /applications:
+    post:
+      tags: [Applications]
+      operationId: submitApplication
+      summary: Submit an application
+      description: >
+        Accepts a completed application for processing. On success the
+        application transitions started -> submitted (event
+        application.submitted). The operation is idempotent under the
+        Idempotency-Key header: a replay with the same key and payload returns
+        the original result; a replay with the same key and a different
+        payload is rejected with error category duplicate_submission.
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplicationSubmission"
+      responses:
+        "201":
+          description: Application accepted and durably recorded.
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationIdResponse"
+            AOSS-Version:
+              $ref: "#/components/headers/AossVersion"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Application"
+        "200":
+          description: Idempotent replay; the previously recorded result.
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Application"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "409":
+          $ref: "#/components/responses/DuplicateSubmission"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/VendorUnavailable"
+      callbacks:
+        statusChanged:
+          "{$request.body#/callback_url}":
+            post:
+              operationId: statusChangedCallback
+              summary: Status change notification (webhook)
+              description: >
+                Delivered to the adopter-registered callback URL whenever the
+                application's status changes. Deliveries are at-least-once;
+                consumers MUST deduplicate on event_id and MUST tolerate
+                out-of-order arrival by comparing occurred_at and sequence.
+              parameters:
+                - $ref: "#/components/parameters/CorrelationId"
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: "#/components/schemas/StatusChangedEvent"
+              responses:
+                "200":
+                  description: Acknowledged. Any 2xx suppresses redelivery.
+                "410":
+                  description: >
+                    Subscription no longer valid; the sender SHOULD stop
+                    delivering to this URL.
+
+  /applications/{applicationId}:
+    get:
+      tags: [Applications]
+      operationId: getApplication
+      summary: Get application status and outcome
+      description: >
+        Returns the application's current canonical status and its Outcome
+        object, including explanation, reasons (when applicable), and next
+        steps.
+      parameters:
+        - $ref: "#/components/parameters/ApplicationId"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Current application state.
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationIdResponse"
+            AOSS-Version:
+              $ref: "#/components/headers/AossVersion"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Application"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /applications/{applicationId}/information:
+    post:
+      tags: [Applications]
+      operationId: provideInformation
+      summary: Provide additional information
+      description: >
+        Supplies applicant input requested while the application is in
+        needs_more_information. Each item references the NextStep it
+        satisfies. On acceptance the application transitions
+        needs_more_information -> under_review (event information.provided).
+        Idempotent under the Idempotency-Key header.
+      parameters:
+        - $ref: "#/components/parameters/ApplicationId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InformationSubmission"
+      responses:
+        "200":
+          description: Information accepted; review resumed.
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationIdResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Application"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The application is not in a status that accepts additional
+            information, or an idempotency conflict occurred.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /applications/{applicationId}/next-steps:
+    get:
+      tags: [Applications]
+      operationId: listNextSteps
+      summary: List required next steps
+      description: >
+        Returns the ordered list of actions currently required of or available
+        to the applicant. Empty for terminal statuses with no follow-up
+        actions.
+      parameters:
+        - $ref: "#/components/parameters/ApplicationId"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Current next steps, in recommended order.
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationIdResponse"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [application_id, status, next_steps]
+                properties:
+                  application_id:
+                    type: string
+                  status:
+                    $ref: "#/components/schemas/Status"
+                  next_steps:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NextStep"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /applications/{applicationId}/events:
+    get:
+      tags: [Events]
+      operationId: listStatusEvents
+      summary: List status events
+      description: >
+        Returns the append-only status event history for an application, in
+        sequence order. Intended for audit, support tooling, and
+        reconciliation after missed webhook deliveries.
+      parameters:
+        - $ref: "#/components/parameters/ApplicationId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - name: after_sequence
+          in: query
+          required: false
+          description: Return only events with sequence greater than this value.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Status event history.
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationIdResponse"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [application_id, events]
+                properties:
+                  application_id:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StatusEvent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    ApplicationId:
+      name: applicationId
+      in: path
+      required: true
+      description: Application identifier assigned by the middle layer.
+      schema:
+        type: string
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: >
+        Caller-supplied correlation ID. If absent, the middle layer generates
+        one. The effective value is echoed in the X-Correlation-Id response
+        header and propagated to all downstream calls, logs, and events.
+        MUST NOT encode PII.
+      schema:
+        type: string
+        maxLength: 128
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Client-generated unique key (UUID recommended) making this mutating
+        request safely retryable. Same key + same payload returns the original
+        result; same key + different payload is rejected with category
+        duplicate_submission.
+      schema:
+        type: string
+        maxLength: 128
+
+  headers:
+    CorrelationIdResponse:
+      description: The effective correlation ID for this request.
+      schema:
+        type: string
+    AossVersion:
+      description: AOSS specification version implemented by this server.
+      schema:
+        type: string
+        example: 0.1.0
+
+  responses:
+    ValidationError:
+      description: The request failed validation (category validation_error).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+    DuplicateSubmission:
+      description: >
+        Idempotency conflict or duplicate application (category
+        duplicate_submission).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+    NotFound:
+      description: No application with this identifier is visible to the caller.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+    VendorUnavailable:
+      description: >
+        A required decision system is unavailable (category
+        vendor_unavailable). The application, if created, remains in its
+        current status.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+    InternalError:
+      description: Unexpected middle-layer failure (category internal_error).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+
+  schemas:
+    Status:
+      type: string
+      description: >
+        Canonical AOSS application status. Values expired and withdrawn are
+        v0.1 proposed extensions; see SPEC.md Section 3.3.
+      enum:
+        - started
+        - submitted
+        - under_review
+        - needs_more_information
+        - approved
+        - opened
+        - declined
+        - expired
+        - withdrawn
+
+    ProductType:
+      type: string
+      description: The financial product being applied for.
+      enum:
+        - deposit_checking
+        - deposit_savings
+        - credit
+
+    ErrorCategory:
+      type: string
+      description: Canonical AOSS error category. See SPEC.md Section 4.
+      enum:
+        - validation_error
+        - identity_verification_failure
+        - document_quality
+        - vendor_unavailable
+        - timeout
+        - policy_decline
+        - duplicate_submission
+        - consent_required
+        - internal_error
+
+    ApplicationSubmission:
+      type: object
+      description: >
+        Payload accepted by submitApplication. Applicant PII is carried only
+        here and in InformationSubmission; it never appears in outcomes,
+        events, or error payloads.
+      required: [product_type, applicant, consents]
+      properties:
+        product_type:
+          $ref: "#/components/schemas/ProductType"
+        client_application_ref:
+          type: string
+          description: >
+            Optional client-side reference for the intake session that
+            produced this submission.
+        applicant:
+          $ref: "#/components/schemas/Applicant"
+        consents:
+          type: array
+          description: Disclosure acknowledgments captured during intake.
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ConsentRecord"
+        callback_url:
+          type: string
+          format: uri
+          description: >
+            HTTPS URL to receive statusChanged callback deliveries for this
+            application. Optional; adopters may instead configure
+            subscriptions out of band.
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Namespaced, PII-free adopter metadata.
+
+    Applicant:
+      type: object
+      description: >
+        Minimal applicant schema for v0.1. Adopters extend this per product
+        requirements; extensions carrying PII are subject to the redaction
+        requirements of SPEC.md Section 6.3.
+      required:
+        [first_name, last_name, date_of_birth, address, email, government_id]
+      properties:
+        first_name:
+          type: string
+        middle_name:
+          type: string
+        last_name:
+          type: string
+        date_of_birth:
+          type: string
+          format: date
+        address:
+          $ref: "#/components/schemas/Address"
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        government_id:
+          type: object
+          description: Government identifier, transported but never logged.
+          properties:
+            type:
+              type: string
+              enum: [ssn, itin]
+            value:
+              type: string
+
+    Address:
+      type: object
+      required: [line1, city, state, zip_code]
+      properties:
+        line1:
+          type: string
+        line2:
+          type: string
+        city:
+          type: string
+        state:
+          type: string
+          description: State or territory code.
+        zip_code:
+          type: string
+
+    ConsentRecord:
+      type: object
+      required: [disclosure_id, disclosure_version, accepted_at]
+      properties:
+        disclosure_id:
+          type: string
+          description: Identifier of the disclosure presented.
+        disclosure_version:
+          type: string
+          description: Version of the disclosure text presented.
+        accepted_at:
+          type: string
+          format: date-time
+          description: RFC 3339 UTC timestamp of acknowledgment.
+
+    Application:
+      type: object
+      description: An application and its current outcome.
+      required:
+        [application_id, product_type, status, created_at, updated_at, outcome]
+      properties:
+        application_id:
+          type: string
+        product_type:
+          $ref: "#/components/schemas/ProductType"
+        status:
+          $ref: "#/components/schemas/Status"
+        sub_status:
+          type: string
+          description: >
+            Optional namespaced advisory detail (e.g., review.manual_fraud).
+            Never required for correct client behavior.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        outcome:
+          $ref: "#/components/schemas/Outcome"
+
+    Outcome:
+      type: object
+      description: >
+        The structured disposition of an application. Semantics in SPEC.md
+        Section 5.
+      required: [application_id, status, occurred_at, correlation_id]
+      properties:
+        application_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/Status"
+        sub_status:
+          type: string
+        explanation:
+          $ref: "#/components/schemas/Explanation"
+        reasons:
+          type: array
+          description: >
+            Structured reasons for the disposition. Required when status is
+            declined; ordered by rank with principal reason(s) first.
+          items:
+            $ref: "#/components/schemas/OutcomeReason"
+        next_steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/NextStep"
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+        occurred_at:
+          type: string
+          format: date-time
+        correlation_id:
+          type: string
+
+    Explanation:
+      type: object
+      required: [code, text]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable explanation identifier.
+        text:
+          type: string
+          description: >
+            Applicant-safe display copy, or a key the client resolves to
+            localized copy. Never contains internal system or vendor names.
+
+    OutcomeReason:
+      type: object
+      required: [code, description, rank]
+      properties:
+        code:
+          type: string
+          description: Stable code from the adopter's versioned reason catalog.
+        description:
+          type: string
+          description: Specific, human-readable reason text.
+        rank:
+          type: integer
+          minimum: 1
+          description: Principal-factor ordering; 1 is most significant.
+
+    NextStep:
+      type: object
+      required: [id, type, title, description]
+      properties:
+        id:
+          type: string
+          description: Stable identifier, referenced by InformationSubmission.
+        type:
+          type: string
+          description: >
+            Next-step type. Clients MUST render a safe fallback for unknown
+            values.
+          enum:
+            - provide_document
+            - confirm_detail
+            - acknowledge_disclosure
+            - wait
+            - contact_support
+        title:
+          type: string
+        description:
+          type: string
+        due_by:
+          type: string
+          format: date-time
+          description: >
+            Deadline after which the step (and possibly the application) may
+            expire, where the expired extension status is implemented.
+        input_schema:
+          type: object
+          description: >
+            Optional machine-readable description of the expected input
+            (e.g., a JSON Schema fragment for a confirm_detail step, or
+            accepted document types for provide_document).
+
+    InformationSubmission:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [next_step_id]
+            properties:
+              next_step_id:
+                type: string
+                description: The NextStep this item satisfies.
+              values:
+                type: object
+                additionalProperties: true
+                description: Field values for confirm_detail-style steps.
+              document:
+                type: object
+                description: Document payload for provide_document steps.
+                properties:
+                  content_type:
+                    type: string
+                    example: image/jpeg
+                  content_base64:
+                    type: string
+                    description: Base64-encoded document content.
+              consent:
+                $ref: "#/components/schemas/ConsentRecord"
+
+    StatusEvent:
+      type: object
+      description: >
+        One immutable entry in an application's append-only status history.
+      required:
+        - event_id
+        - application_id
+        - sequence
+        - event
+        - to_status
+        - actor
+        - occurred_at
+        - correlation_id
+      properties:
+        event_id:
+          type: string
+          description: Globally unique; consumers deduplicate on this.
+        application_id:
+          type: string
+        sequence:
+          type: integer
+          minimum: 1
+          description: Monotonic per-application ordering.
+        event:
+          type: string
+          description: Transition event name (SPEC.md Section 3.4).
+          enum:
+            - application.started
+            - application.submitted
+            - review.started
+            - information.requested
+            - information.provided
+            - decision.approved
+            - decision.declined
+            - account.opened
+            - application.expired
+            - application.withdrawn
+        from_status:
+          $ref: "#/components/schemas/Status"
+        to_status:
+          $ref: "#/components/schemas/Status"
+        actor:
+          type: object
+          required: [role]
+          properties:
+            role:
+              type: string
+              enum: [applicant, system, operator]
+            system_id:
+              type: string
+              description: Identity of the acting system or adapter, if any.
+        occurred_at:
+          type: string
+          format: date-time
+        correlation_id:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Namespaced, PII-free.
+
+    StatusChangedEvent:
+      type: object
+      description: Webhook payload delivered on every status change.
+      required: [event, outcome]
+      properties:
+        event:
+          $ref: "#/components/schemas/StatusEvent"
+        outcome:
+          $ref: "#/components/schemas/Outcome"
+
+    ErrorDetail:
+      type: object
+      description: Normalized error structure. Semantics in SPEC.md Section 4.
+      required: [category, code, retryable, message, correlation_id]
+      properties:
+        category:
+          $ref: "#/components/schemas/ErrorCategory"
+        code:
+          type: string
+          description: >
+            Stable, namespaced machine-readable code (e.g.,
+            idv.document_expired).
+        retryable:
+          type: boolean
+          description: >
+            Whether retrying (after any indicated correction) can succeed.
+        message:
+          type: string
+          description: Operator-facing description. Never shown to applicants.
+        user_guidance:
+          type: string
+          description: >
+            Applicant-safe guidance text, or a key the client resolves to
+            localized copy.
+        field_errors:
+          type: array
+          description: Field-level detail for validation_error.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                description: JSON pointer to the offending field.
+              code:
+                type: string
+              message:
+                type: string
+        correlation_id:
+          type: string
