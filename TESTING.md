@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0 (Draft for Comment)
 
-This document describes how conformance to AOSS is verified. RFC 2119 keywords apply as in `SPEC.md`.
+This document specifies how conformance to AOSS is to be verified: the contract tests, state-machine invariants, and adapter checks an implementation MUST pass to claim conformance. The executable conformance suite ships with the reference implementations (Roadmap, phase 2); until then, this document is the normative definition of what that suite must cover. RFC 2119 keywords apply as in SPEC.md.
 
 ## 1. Contract testing
 
@@ -48,4 +48,4 @@ Beyond schema validity, CI SHOULD lint outcome fixtures: declined outcomes have 
 
 ---
 
-*v0.1 draft for comment.
+`*v0.1 draft for comment.`

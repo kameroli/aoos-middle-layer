@@ -6,7 +6,7 @@ Adapters are the only place where vendor-specific and internal-system-specific v
 
 ## 1. Adapter contract
 
-An adapter is a stateless (or externally stated) component with four responsibilities:
+An adapter is a stateless (or with externally stored state) component with four responsibilities:
 
 1. **Request normalization.** Translate an AOSS-domain request (e.g., "verify this applicant's identity," "evaluate this credit application") into the vendor's wire format, including authentication, field mapping, and any vendor-required session setup. The adapter receives only the fields it needs; it MUST NOT be handed the full application if a subset suffices.
 2. **Response normalization.** Translate the vendor's response into exactly one of:
@@ -38,28 +38,28 @@ Adapters MUST be deterministic mappers: the same vendor response always yields t
 
 Illustrative only; every real vendor's vocabulary differs. Vendor terms below are generic placeholders.
 
-| Generic vendor response | AOSS mapping | Notes |
-|---|---|---|
-| `verified` / match score above threshold | StatusSignal: contributes to `decision.approved` path (IDV check passed) | The adapter reports "check passed"; the middle layer decides overall status once all required checks report. |
-| `not_verified` — data mismatch | NormalizedError: `identity_verification_failure`, code `idv.data_mismatch`, retryable=true | Typically routes the application to `needs_more_information` with a `confirm_detail` next step. |
-| `document_unreadable` / `image_quality_low` | NormalizedError: `document_quality`, code `idv.image_quality`, retryable=true | Routes to `needs_more_information` with a `provide_document` next step carrying capture guidance. |
-| `document_expired` | NormalizedError: `document_quality`, code `idv.document_expired`, retryable=true | Applicant supplies a current document. |
-| `refer` / `manual_review` | StatusSignal: hold in `under_review`, sub_status `review.manual_idv` | No applicant-facing change; operational queue entry created. |
-| HTTP 429 | NormalizedError: `vendor_unavailable`, code `idv.rate_limited`, retryable=true | Backoff per Section 4; honor any Retry-After equivalent. |
-| HTTP 5xx / connection failure | NormalizedError: `vendor_unavailable`, code `idv.upstream_error`, retryable=true | Counts toward circuit breaker. |
-| No response within deadline | Indeterminate → NormalizedError: `timeout`, code `idv.timeout`, retryable=true | Reconcile before re-invoking (Section 4). |
-| HTTP 4xx (malformed request) | NormalizedError: `internal_error`, code `idv.request_rejected`, retryable=false | A 4xx from a vendor is an adapter/integration bug, not an applicant problem; alert engineering. |
+| Generic vendor response                     | AOSS mapping                                                                               | Notes                                                                                                        |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `verified` / match score above threshold    | StatusSignal: contributes to `decision.approved` path (IDV check passed)                   | The adapter reports "check passed"; the middle layer decides overall status once all required checks report. |
+| `not_verified` — data mismatch              | NormalizedError: `identity_verification_failure`, code `idv.data_mismatch`, retryable=true | Typically routes the application to `needs_more_information` with a `confirm_detail` next step.              |
+| `document_unreadable` / `image_quality_low` | NormalizedError: `document_quality`, code `idv.image_quality`, retryable=true              | Routes to `needs_more_information` with a `provide_document` next step carrying capture guidance.            |
+| `document_expired`                          | NormalizedError: `document_quality`, code `idv.document_expired`, retryable=true           | Applicant supplies a current document.                                                                       |
+| `refer` / `manual_review`                   | StatusSignal: hold in `under_review`, sub_status `review.manual_idv`                       | No applicant-facing change; operational queue entry created.                                                 |
+| HTTP 429                                    | NormalizedError: `vendor_unavailable`, code `idv.rate_limited`, retryable=true             | Backoff per Section 4; honor any Retry-After equivalent.                                                     |
+| HTTP 5xx / connection failure               | NormalizedError: `vendor_unavailable`, code `idv.upstream_error`, retryable=true           | Counts toward circuit breaker.                                                                               |
+| No response within deadline                 | Indeterminate → NormalizedError: `timeout`, code `idv.timeout`, retryable=true             | Reconcile before re-invoking (Section 4).                                                                    |
+| HTTP 4xx (malformed request)                | NormalizedError: `internal_error`, code `idv.request_rejected`, retryable=false            | A 4xx from a vendor is an adapter/integration bug, not an applicant problem; alert engineering.              |
 
 ## 3. Example mapping: generic decision/underwriting path
 
-| Generic vendor/engine response | AOSS mapping | Notes |
-|---|---|---|
-| `approve` | StatusSignal: `decision.approved` | For deposit products, provisioning then drives `account.opened`. |
-| `decline` + reason codes | StatusSignal: `decision.declined` + reasons mapped into the adopter's catalog with vendor rank preserved | Every vendor reason code MUST have a catalog mapping (Section 1.3). Ranked, specific reasons populate `Outcome.reasons[]` per `SPEC.md` Section 7. |
-| `decline` + unrecognized reason code | Route to manual review; alert | Never auto-communicate an unmapped reason. |
-| `conditional` / `refer` | StatusSignal: `information.requested` or hold in `under_review`, per condition type | Conditions the applicant can satisfy become `NextStep` entries; internal conditions become review-queue items. |
-| `counteroffer` (engine proposes different terms) | Out of scope for v0.1 core; hold in `under_review` for operator handling | Candidate for a future extension; feedback welcome. |
-| Engine unavailable / timeout | `vendor_unavailable` / `timeout` as in Section 2 | The application MUST remain `under_review`; retry exhaustion never becomes a decline. |
+| Generic vendor/engine response                   | AOSS mapping                                                                                             | Notes                                                                                                                                              |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `approve`                                        | StatusSignal: `decision.approved`                                                                        | For deposit products, provisioning then drives `account.opened`.                                                                                   |
+| `decline` + reason codes                         | StatusSignal: `decision.declined` + reasons mapped into the adopter's catalog with vendor rank preserved | Every vendor reason code MUST have a catalog mapping (Section 1.3). Ranked, specific reasons populate `Outcome.reasons[]` per `SPEC.md` Section 7. |
+| `decline` + unrecognized reason code             | Route to manual review; alert                                                                            | Never auto-communicate an unmapped reason.                                                                                                         |
+| `conditional` / `refer`                          | StatusSignal: `information.requested` or hold in `under_review`, per condition type                      | Conditions the applicant can satisfy become `NextStep` entries; internal conditions become review-queue items.                                     |
+| `counteroffer` (engine proposes different terms) | Out of scope for v0.1 core; hold in `under_review` for operator handling                                 | Candidate for a future extension; feedback welcome.                                                                                                |
+| Engine unavailable / timeout                     | `vendor_unavailable` / `timeout` as in Section 2                                                         | The application MUST remain `under_review`; retry exhaustion never becomes a decline.                                                              |
 
 ## 4. Retry and idempotency rules
 
@@ -71,7 +71,7 @@ Illustrative only; every real vendor's vocabulary differs. Vendor terms below ar
 
 ## 5. Sandbox adapter
 
-The repository's conformance suite (`TESTING.md`) relies on a **sandbox adapter**: a simulated vendor implementing the full adapter contract with scripted behavior. It MUST support, selectable per call via test configuration or magic input values:
+The conformance suite specified in TESTING.md relies on a sandbox adapter: a simulated vendor implementing the full adapter contract with scripted behavior. It MUST support, selectable per call via test configuration or magic input values:
 
 - each mapped happy-path response (approve, decline-with-reasons, refer, verified, not-verified, document-quality failures);
 - fault injection: timeout, 5xx, connection reset, rate limiting, malformed response body, partial response (syntactically valid but missing required fields);
@@ -82,4 +82,4 @@ Adopters SHOULD run their client and middle-layer integration tests against the 
 
 ---
 
-*v0.1 draft for comment. Feedback is particularly requested on the counteroffer gap (Section 3) and on the minimum required fault set for the sandbox adapter.*
+_v0.1 draft for comment. Feedback is particularly requested on the counteroffer gap (Section 3) and on the minimum required fault set for the sandbox adapter._
