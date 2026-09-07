@@ -31,5 +31,5 @@ Entries distinguish **normative** changes (conformance impact: statuses, transit
   - `TESTING.md` — contract testing approach, state-machine verification, adapter conformance checklist, failure-mode test categories, outcome quality checks.
 - Proposed extension statuses `expired` and `withdrawn`, published specifically for adopter comment.
 
-[Unreleased]: https://github.com/kameroli/aoss-middle-layer/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/kameroli/aoss-middle-layer/releases/tag/v0.1.0
+[Unreleased]: https://github.com/kameroli/aoss/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kameroli/aoss/releases/tag/v0.1.0
